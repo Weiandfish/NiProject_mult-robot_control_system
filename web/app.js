@@ -1,185 +1,519 @@
 "use strict";
-const $ = id => document.getElementById(id);
-const c = $("map"), g = c.getContext("2d");
-const info = {
-  localized: "已定位", offline: "离线", map_mismatch: "地图不一致", unlocalized: "等待定位", stale: "位置已过期"
+
+const byId = id => document.getElementById(id);
+const canvas = byId("map");
+const ctx = canvas.getContext("2d");
+const commandChoice = byId("commandChoice");
+const spatialCommands = new Set(["seed_pose", "preview_path"]);
+const statusNames = {
+  localized: "已定位",
+  offline: "离线",
+  map_mismatch: "地图不一致",
+  unlocalized: "等待定位",
+  stale: "位置过期",
+  disconnected: "连接中断"
 };
-const states = {queued:"待发送",sent:"待回执",ok:"已回执",rejected:"已拒绝",failed:"失败",unknown:"结果未知",expired:"已过期"};
-const commands = {ping:"通信探测",status:"读取状态",seed_pose:"初始位姿",preview_path:"路线预览"};
-const colors = ["#007560", "#2264aa", "#a94f19", "#7249a7", "#8b3859"];
-let data, selected, img, scale = 1, dx = 0, dy = 0, target, drag, connected = false, lastList = "";
-let vw = 1, vh = 1;
-const rad = Math.PI/180;
-function element(tag, text, cls) {
-  const n = document.createElement(tag); n.textContent = text;
-  if (cls) n.className = cls;
-  return n;
+const jobStates = {
+  queued: "待发送", sent: "待回执", ok: "已回执", rejected: "已拒绝",
+  failed: "失败", unknown: "结果未知", expired: "已过期"
+};
+const commandNames = {
+  ping: "通信探测", status: "读取状态", seed_pose: "初始位姿", preview_path: "路线预览"
+};
+const colors = ["#166c59", "#2365a1", "#a54819", "#694ba0", "#943557", "#3e6a2b", "#176c79", "#796019"];
+const lastPositionColor = "#596963";
+const radians = Math.PI / 180;
+const roster = new Map();
+const submitting = new Set();
+let data, image, selected, target, drag, markers = [];
+let connected = false;
+let draftVersion = 0;
+let receiptSignature;
+let viewWidth = 1, viewHeight = 1;
+let scale = 1, offsetX = 0, offsetY = 0;
+let fitted = true;
+
+function element(tag, text, className) {
+  const node = document.createElement(tag);
+  node.textContent = text;
+  if (className) node.className = className;
+  return node;
 }
-function xy(x,y) {
-  const m=data.map, [ox,oy,t]=m.origin, X=x-ox,Y=y-oy;
-  return [(X*Math.cos(t)+Y*Math.sin(t))/m.resolution,
-          m.height-(-X*Math.sin(t)+Y*Math.cos(t))/m.resolution];
+
+function selectedRobot() {
+  return data?.robots.find(robot => robot.id === selected);
 }
-function world(u,v) {
-  const m=data.map, [ox,oy,t]=m.origin, X=u*m.resolution,Y=(m.height-v)*m.resolution;
-  return [ox+X*Math.cos(t)-Y*Math.sin(t), oy+X*Math.sin(t)+Y*Math.cos(t)];
+
+function robotState(robot) {
+  return connected ? robot.state : "disconnected";
 }
+
+function markerColor(robot, index) {
+  return robotState(robot) === "localized" ? colors[index % colors.length] : lastPositionColor;
+}
+
+function markerNumber(index) {
+  return String(index + 1).padStart(2, "0");
+}
+
+function toImage(x, y) {
+  const {origin: [ox, oy, yaw], resolution, height} = data.map;
+  const dx = x - ox, dy = y - oy;
+  const c = Math.cos(yaw), s = Math.sin(yaw);
+  return [(c * dx + s * dy) / resolution, height - (-s * dx + c * dy) / resolution];
+}
+
+function toWorld(u, v) {
+  const {origin: [ox, oy, yaw], resolution, height} = data.map;
+  const x = u * resolution, y = (height - v) * resolution;
+  const c = Math.cos(yaw), s = Math.sin(yaw);
+  return [ox + c * x - s * y, oy + s * x + c * y];
+}
+
+function toScreen(x, y) {
+  const [u, v] = toImage(x, y);
+  return [offsetX + scale * u, offsetY + scale * v];
+}
+
+function onMap(u, v) {
+  return u >= 0 && u < data.map.width && v > 0 && v <= data.map.height;
+}
+
 function fit() {
   if (!data) return;
-  const m=data.map;
-  scale=Math.max(.001,Math.min((vw-48)/m.width,(vh-48)/m.height));
-  dx=(vw-m.width*scale)/2; dy=(vh-m.height*scale)/2;
+  const {width, height} = data.map;
+  fitted = true;
+  scale = Math.max(.001, Math.min((viewWidth - 56) / width, (viewHeight - 56) / height));
+  offsetX = (viewWidth - width * scale) / 2;
+  offsetY = (viewHeight - height * scale) / 2;
   draw();
 }
-function zoom(f,x=vw/2,y=vh/2) {
-  const next=Math.min(200,Math.max(.005,scale*f)), ratio=next/scale;
-  dx=x-(x-dx)*ratio; dy=y-(y-dy)*ratio; scale=next; draw();
+
+function zoom(factor, x = viewWidth / 2, y = viewHeight / 2) {
+  if (!data) return;
+  fitted = false;
+  const next = Math.min(200, Math.max(.005, scale * factor));
+  offsetX = x - (x - offsetX) * next / scale;
+  offsetY = y - (y - offsetY) * next / scale;
+  scale = next;
+  draw();
 }
-function dot(x,y,col,r=6) {
-  g.beginPath(); g.arc(x,y,r,0,2*Math.PI); g.fillStyle=col; g.fill();
+
+function circle(x, y, radius, fill, stroke, width = 1) {
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, 2 * Math.PI);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  if (stroke) {
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = width;
+    ctx.stroke();
+  }
 }
-function screen(p) {
-  const [u,v]=xy(p[0],p[1]); return [dx+scale*u,dy+scale*v];
+
+function line(x, y, u, v, color, width) {
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(u, v);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.stroke();
 }
+
+function markerCenter(x, y) {
+  const free = (px, py) => px >= 14 && py >= 14 && px <= viewWidth - 14 && py <= viewHeight - 14 &&
+    markers.every(pin => Math.hypot(px - pin.x, py - pin.y) >= 26);
+  if (free(x, y)) return [x, y];
+  // Move overlapping labels while keeping the actual pose at the end of the leader.
+  for (const distance of [28, 54, 80]) {
+    for (let step = 0; step < 8; step++) {
+      const angle = step * Math.PI / 4;
+      const px = x + distance * Math.cos(angle), py = y + distance * Math.sin(angle);
+      if (free(px, py)) return [px, py];
+    }
+  }
+  return [x, y];
+}
+
+function drawMarkers() {
+  markers = [];
+  data.robots.forEach((robot, index) => {
+    if (!robot.pose || !onMap(...toImage(robot.pose.x, robot.pose.y))) return;
+    const [anchorX, anchorY] = toScreen(robot.pose.x, robot.pose.y);
+    if (anchorX < 0 || anchorY < 0 || anchorX > viewWidth || anchorY > viewHeight) return;
+    const [x, y] = markerCenter(anchorX, anchorY);
+    markers.push({robot, index, x, y, anchorX, anchorY});
+  });
+
+  for (const {robot, index, x, y, anchorX, anchorY} of markers) {
+    const color = markerColor(robot, index);
+    if (x !== anchorX || y !== anchorY) {
+      line(anchorX, anchorY, x, y, color, 1.5);
+      circle(anchorX, anchorY, 3, color, "#fff");
+    }
+    if (robotState(robot) === "localized") {
+      const angle = robot.pose.yaw_deg * radians - data.map.origin[2];
+      line(x, y, x + 17 * Math.cos(angle), y - 17 * Math.sin(angle), color, 3);
+    }
+  }
+  for (const {robot, index, x, y} of markers) {
+    const live = robotState(robot) === "localized";
+    const color = markerColor(robot, index);
+    if (robot.id === selected) circle(x, y, 14, "#fff", color, 2);
+    circle(x, y, 10.5, live ? color : "#fff", live ? "#fff" : color, 1.5);
+    ctx.fillStyle = live ? "#fff" : color;
+    ctx.font = "650 10px ui-monospace, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(markerNumber(index), x, y + .5);
+  }
+}
+
+function drawScale() {
+  const metersPerPixel = data.map.resolution / scale;
+  const value = 10 ** Math.floor(Math.log10(85 * metersPerPixel));
+  const span = value / metersPerPixel, y = viewHeight - 20;
+  ctx.fillStyle = "#f8fbf9";
+  ctx.fillRect(9, y - 20, Math.max(span + 20, 64), 32);
+  line(16, y, 16 + span, y, "#263f37", 2);
+  ctx.fillStyle = "#263f37";
+  ctx.font = "12px system-ui";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText(value + " m", 16, y - 5);
+}
+
 function draw() {
-  g.clearRect(0,0,vw,vh);
+  ctx.clearRect(0, 0, viewWidth, viewHeight);
   if (!data) return;
-  const m=data.map;
-  if (img?.complete && img.naturalWidth) {
-    g.imageSmoothingEnabled=scale<1;
-    g.drawImage(img,dx,dy,m.width*scale,m.height*scale);
+  if (image?.complete && image.naturalWidth) {
+    ctx.imageSmoothingEnabled = scale < 1;
+    ctx.drawImage(image, offsetX, offsetY, data.map.width * scale, data.map.height * scale);
   }
-  if (target) {
-    const [x,y]=screen(target);
-    g.strokeStyle="#805000";g.lineWidth=2;g.beginPath();
-    g.moveTo(x-8,y);g.lineTo(x+8,y);g.moveTo(x,y-8);g.lineTo(x,y+8);g.stroke();
+  const robot = selectedRobot();
+  if (robot && robotState(robot) === "localized" && robot.plan?.length) {
+    ctx.beginPath();
+    robot.plan.forEach(([x, y], index) => {
+      const point = toScreen(x, y);
+      if (index === 0) ctx.moveTo(...point);
+      else ctx.lineTo(...point);
+    });
+    ctx.strokeStyle = markerColor(robot, data.robots.indexOf(robot));
+    ctx.lineWidth = 3;
+    ctx.stroke();
   }
-  data.robots.forEach((r,i)=>{
-    const color=colors[i%colors.length];
-    if (r.id===selected && r.plan?.length && connected && r.state==="localized") {
-      g.strokeStyle=color;g.lineWidth=3;g.beginPath();
-      r.plan.forEach((p,j)=>{const [x,y]=screen(p);j?g.lineTo(x,y):g.moveTo(x,y);});
-      g.stroke();
-    }
-    if (!r.pose) return;
-    const [u,v]=xy(r.pose.x,r.pose.y);
-    if (u<0 || v<0 || u>=m.width || v>m.height) return;
-    const x=dx+scale*u,y=dy+scale*v,live=r.state==="localized"&&connected;
-    if (selected===r.id) dot(x,y,"#ffffff",11);
-    if (live) {
-      const a=r.pose.yaw_deg*rad-m.origin[2];
-      g.lineWidth=3;g.strokeStyle=color;g.beginPath();g.moveTo(x,y);g.lineTo(x+16*Math.cos(a),y-16*Math.sin(a));g.stroke();
-      dot(x,y,color);
-    } else {dot(x,y,"#5f706b");dot(x,y,"#fff",3.5);}
-    g.font="600 12px system-ui";g.lineWidth=3;g.strokeStyle="#fff";g.strokeText(r.name,x+12,y-8);
-    g.fillStyle="#1c322b";g.fillText(r.name,x+12,y-8);
-  });
-  const perPixel=m.resolution/scale, value=10**Math.floor(Math.log10(85*perPixel));
-  if (Number.isFinite(value) && value>0) {
-    const span=value/perPixel,y=vh-21;
-    g.fillStyle="#f8fbf9";g.fillRect(9,y-20,Math.max(span+20,64),33);
-    g.strokeStyle="#263f37";g.lineWidth=2;g.beginPath();g.moveTo(16,y);g.lineTo(16+span,y);g.stroke();
-    g.fillStyle="#263f37";g.font="12px system-ui";g.fillText(value+" m",16,y-5);
+  if (target && spatialCommands.has(commandChoice.value)) {
+    const [x, y] = toScreen(...target);
+    line(x - 7, y, x + 7, y, "#805000", 2);
+    line(x, y - 7, x, y + 7, "#805000", 2);
   }
+  drawMarkers();
+  drawScale();
 }
-function select(id) {selected=id;lastList="";render();}
-function render() {
-  if (!data) return;
-  const {robots,map,jobs,demo}=data;
-  $("scope").textContent=demo?"离线演示 · 模拟机器人":"实机模式";
-  $("scope").className=demo?"demo":"";
-  $("counts").textContent=connected?`${robots.filter(r=>r.online).length} / ${robots.length} 在线`:"控制台连接中断";
-  $("mapName").textContent=map.title||map.map_id;
-  $("mapInfo").textContent=`${map.frame} · ${map.resolution} m/px`;
-  const listKey=JSON.stringify(robots.map(r=>[r.id,r.state,r.address,r.expected_ip,r.name,connected,selected]));
-  if (listKey!==lastList) {
-    lastList=listKey;
-    $("robots").replaceChildren(...robots.map(r=>{
-      const b=element("button","","robot"), s=element("span",connected?info[r.state]:"未知","state");
-      b.type="button";b.setAttribute("aria-pressed",r.id===selected);b.onclick=()=>select(r.id);
-      s.dataset.state=r.state;
-      b.append(element("b",r.name),s,element("span",r.address||r.expected_ip||"未连接","addr"),element("span",r.id,"addr"));
-      return b;
-    }));
+
+function positionText(robot) {
+  if (!robot.pose) return "暂无位置";
+  const {x, y, yaw_deg: yaw} = robot.pose;
+  const label = robotState(robot) === "localized" ? "" : "末位 ";
+  return `${label}X ${x.toFixed(2)} · Y ${y.toFixed(2)} m · ${yaw.toFixed(0)}°`;
+}
+
+function makeRobotRow(id) {
+  const button = element("button", "", "robot");
+  button.type = "button";
+  button.dataset.robot = id;
+  button.setAttribute("aria-controls", "commandPane");
+  button.onclick = () => selectRobot(id);
+  const pin = element("span", "", "markerKey");
+  const name = element("strong", "", "robotName");
+  const status = element("span", "", "state");
+  const pose = element("span", "", "robotPose");
+  button.append(pin, name, status, pose);
+  return {button, pin, name, status, pose};
+}
+
+function renderRoster(robots) {
+  const list = byId("robots");
+  const needsOrder = robots.length !== roster.size ||
+    robots.some((robot, index) => list.children[index]?.dataset.robot !== robot.id);
+  if (needsOrder) {
+    const next = robots.map(robot => {
+      if (!roster.has(robot.id)) roster.set(robot.id, makeRobotRow(robot.id));
+      return roster.get(robot.id).button;
+    });
+    for (const id of roster.keys()) {
+      if (!robots.some(robot => robot.id === id)) roster.delete(id);
+    }
+    list.replaceChildren(...next);
   }
-  const r=robots.find(r=>r.id===selected);
-  $("selection").textContent=r?.name||"未选中";
-  const d=r?.data||{};
-  $("detail").textContent=r?`位姿 ${r.pose?`${r.pose.x.toFixed(2)}, ${r.pose.y.toFixed(2)} m · ${r.pose.yaw_deg.toFixed(0)}°`:"—"}　IMU ${d.imu_fresh?"有数据":"无数据"}　可用内存 ${d.memory_available_mib??"—"} MiB`:"";
-  document.querySelectorAll("[data-cmd]").forEach(b=>{
-    const cmd=b.dataset.cmd, matches=r?.state!=="map_mismatch";
-    b.disabled=!(connected&&r?.online&&r.commands.includes(cmd)&&
-      (cmd!=="seed_pose"||matches)&&(cmd!=="preview_path"||r.state==="localized"));
+  if (!robots.length) {
+    list.replaceChildren(element("p", "尚未登记机器人", "empty"));
+  }
+  robots.forEach((robot, index) => {
+    const {button, pin, name, status, pose} = roster.get(robot.id);
+    const state = robotState(robot);
+    button.setAttribute("aria-pressed", robot.id === selected);
+    button.title = `${robot.id} · ${robot.address || robot.expected_ip || "无连接地址"}`;
+    pin.textContent = markerNumber(index);
+    pin.style.setProperty("--marker", markerColor(robot, index));
+    name.textContent = robot.name;
+    status.textContent = statusNames[state];
+    status.dataset.state = state;
+    pose.textContent = positionText(robot);
   });
-  $("jobs").replaceChildren(...jobs.map(j=>{
-    const li=element("li",`${new Date(j.time*1000).toLocaleTimeString()}　${j.robot} · ${commands[j.command]} · ${states[j.state]}`);
-    li.append(element("small",j.message)); return li;
+}
+
+function renderOverview(robots) {
+  const online = robots.filter(robot => robot.online).length;
+  const localized = robots.filter(robot => robot.state === "localized").length;
+  byId("onlineCount").textContent = connected ? `${online} / ${robots.length}` : "—";
+  byId("localizedCount").textContent = connected ? localized : "—";
+  byId("waitingCount").textContent = connected ? online - localized : "—";
+  byId("offlineCount").textContent = connected ? robots.length - online : "—";
+  byId("fleetCount").textContent = `${robots.length} 台`;
+}
+
+function canCommand(robot, command) {
+  if (!connected || !robot?.online || !robot.commands.includes(command)) return false;
+  if (command === "seed_pose") return robot.state !== "map_mismatch";
+  if (command === "preview_path") return robot.state === "localized";
+  return true;
+}
+
+function renderReceipts(robot) {
+  const jobs = data.jobs.filter(job => job.robot === robot.id).slice(0, 3);
+  const signature = JSON.stringify([robot.id, jobs]);
+  if (signature === receiptSignature) return;
+  receiptSignature = signature;
+  const list = byId("jobs");
+  list.hidden = !jobs.length;
+  list.replaceChildren(...jobs.map(job => {
+    const time = new Date(job.time * 1000).toLocaleTimeString();
+    const item = element("li", `${time} · ${commandNames[job.command]} · ${jobStates[job.state]}`);
+    item.append(element("small", job.message));
+    return item;
   }));
+}
+
+function renderCommandPane() {
+  const robot = selectedRobot();
+  byId("commandPane").hidden = !robot;
+  canvas.classList.toggle("picking", !!robot && canCommand(robot, commandChoice.value) &&
+    spatialCommands.has(commandChoice.value));
+  if (!robot) return;
+
+  byId("selection").textContent = `指令 · ${robot.name}`;
+  const state = robotState(robot);
+  const address = robot.address || robot.expected_ip;
+  const details = [robot.id, address, statusNames[state]];
+  if (connected && robot.online) {
+    details.push(robot.data?.imu_fresh ? "IMU 有数据" : "IMU 无数据");
+    if (robot.data?.memory_available_mib != null) {
+      details.push(`内存 ${robot.data.memory_available_mib} MiB`);
+    }
+  }
+  byId("detail").textContent = details.filter(Boolean).join(" · ");
+  for (const option of commandChoice.options) {
+    option.disabled = !!option.value && !canCommand(robot, option.value);
+  }
+  commandChoice.disabled = !connected || !robot.online || submitting.has(robot.id);
+  byId("coordinates").hidden = !spatialCommands.has(commandChoice.value);
+  byId("sendCommand").disabled = !canCommand(robot, commandChoice.value) || submitting.has(robot.id);
+  renderReceipts(robot);
+}
+
+function render() {
+  const scope = byId("scope");
+  scope.textContent = connected ? (data.demo ? "模拟车队" : "实机车队") : "控制台连接中断";
+  scope.className = connected ? (data.demo ? "demo" : "") : "disconnected";
+  if (!data) return;
+  byId("mapName").textContent = data.map.title || data.map.map_id;
+  byId("mapInfo").textContent = `${data.map.frame} · ${data.map.resolution} m/px`;
+  renderOverview(data.robots);
+  renderRoster(data.robots);
+  renderCommandPane();
   draw();
 }
-function notice(s,error=false) {$("notice").textContent=s;$("notice").className=error?"error":"";}
-async function command(cmd) {
-  let args={};
-  if (cmd==="seed_pose"||cmd==="preview_path") {
-    if (["x","y","yaw"].some(id=>$(id).value===""||!$(id).checkValidity())) {
-      notice("请先在图上取坐标，或填写有效的 X、Y 和朝向。",true);return;
-    }
-    args={x:+$("x").value,y:+$("y").value,yaw_deg:+$("yaw").value};
-    if (cmd==="seed_pose"&&!data.demo&&!confirm("设置初始位姿会重启该机器人的定位。请确认机器人已停稳。")) return;
-  }
-  try {
-    const response=await fetch("/api/commands",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({robot:selected,command:cmd,args,map_id:data.map.map_id}),signal:AbortSignal.timeout(4000)});
-    const value=await response.json();
-    if (!response.ok) throw Error(value.error);
-    notice(`已提交${commands[cmd]}，请看回执。`);
-  } catch(e) {notice(e.message,true);}
+
+function notice(message, error = false) {
+  const node = byId("notice");
+  node.textContent = message;
+  node.hidden = !message;
+  node.className = error ? "error" : "";
 }
-document.querySelectorAll("[data-cmd]").forEach(b=>b.onclick=()=>command(b.dataset.cmd));
-$("zoomIn").onclick=()=>zoom(1.25);$("zoomOut").onclick=()=>zoom(.8);$("fit").onclick=fit;
-new ResizeObserver(()=>{
-  const w=c.clientWidth,h=c.clientHeight,dpr=devicePixelRatio||1;
-  if (!w||!h) return;
-  dx+=(w-vw)/2;dy+=(h-vh)/2;vw=w;vh=h;c.width=w*dpr;c.height=h*dpr;
-  g.setTransform(dpr,0,0,dpr,0,0);draw();
-}).observe(c);
-function position(e) {const r=c.getBoundingClientRect();return [e.clientX-r.left,e.clientY-r.top];}
-c.addEventListener("wheel",e=>{if(!data)return;e.preventDefault();zoom(e.deltaY<0?1.18:.85,...position(e));},{passive:false});
-c.onpointerdown=e=>{if(!data||e.button!==0)return;c.setPointerCapture(e.pointerId);drag={p:position(e),dx,dy};};
-c.onpointermove=e=>{
-  if(!data)return;
-  const [x,y]=position(e);
-  if(drag&&Math.hypot(x-drag.p[0],y-drag.p[1])>3){drag.moved=true;dx=drag.dx+x-drag.p[0];dy=drag.dy+y-drag.p[1];draw();}
-  const [a,b]=world((x-dx)/scale,(y-dy)/scale);
-  $("cursor").textContent=`X ${a.toFixed(2)} m　Y ${b.toFixed(2)} m`;
+
+function selectRobot(id, reveal = true) {
+  if (id === selected) return;
+  selected = id;
+  draftVersion++;
+  byId("commandForm").reset();
+  target = null;
+  notice("");
+  render();
+  if (id && reveal && matchMedia("(max-width: 760px)").matches) {
+    byId("commandPane").scrollIntoView({block: "nearest"});
+  }
+}
+
+function spatialArguments() {
+  const fields = ["x", "y", "yaw"].map(byId);
+  if (fields.some(field => field.value === "" || !field.checkValidity())) return null;
+  return {x: Number(fields[0].value), y: Number(fields[1].value), yaw_deg: Number(fields[2].value)};
+}
+
+async function sendCommand(event) {
+  event.preventDefault();
+  const robot = selectedRobot();
+  const command = commandChoice.value;
+  if (!canCommand(robot, command) || submitting.has(robot.id)) return;
+  let args = {};
+  if (spatialCommands.has(command)) {
+    args = spatialArguments();
+    if (!args) {
+      notice("请在地图点选目标，或填写 X、Y 和朝向。", true);
+      return;
+    }
+    if (command === "seed_pose" && !data.demo &&
+        !confirm(`确认 ${robot.name} 已停稳，并重新设置初始位姿？`)) return;
+  }
+
+  const version = draftVersion;
+  submitting.add(robot.id);
+  renderCommandPane();
+  try {
+    const response = await fetch("/api/commands", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({robot: robot.id, command, args, map_id: data.map.map_id}),
+      signal: AbortSignal.timeout(4000)
+    });
+    const result = await response.json();
+    if (!response.ok) throw Error(result.error);
+    if (version === draftVersion) notice(`${commandNames[command]}已提交。回执显示在下方。`);
+  } catch (error) {
+    if (version === draftVersion) notice(error.message, true);
+  } finally {
+    submitting.delete(robot.id);
+    renderCommandPane();
+  }
+}
+
+byId("commandForm").addEventListener("submit", sendCommand);
+commandChoice.onchange = () => {
+  draftVersion++;
+  if (!spatialCommands.has(commandChoice.value)) target = null;
+  notice(spatialCommands.has(commandChoice.value) ? "在地图点选目标，或输入坐标。" : "");
+  renderCommandPane();
+  draw();
 };
-c.onpointerup=e=>{
-  if(!drag)return;
-  if(!drag.moved){
-    const [x,y]=position(e);
-    const hit=data.robots.find(r=>r.pose&&Math.hypot(...screen([r.pose.x,r.pose.y]).map((n,i)=>n-[x,y][i]))<10);
-    if(hit)select(hit.id);
-    else {
-      const u=(x-dx)/scale,v=(y-dy)/scale;
-      if(u>=0&&u<data.map.width&&v>0&&v<=data.map.height) {
-        target=world(u,v);$("x").value=target[0].toFixed(2);$("y").value=target[1].toFixed(2);draw();
+for (const id of ["x", "y"]) {
+  byId(id).oninput = () => {
+    target = null;
+    draw();
+  };
+}
+byId("closeSelection").onclick = () => {
+  const previous = selected;
+  selectRobot(null);
+  roster.get(previous)?.button.focus();
+};
+byId("zoomIn").onclick = () => zoom(1.25);
+byId("zoomOut").onclick = () => zoom(.8);
+byId("fit").onclick = fit;
+
+new ResizeObserver(() => {
+  const width = canvas.clientWidth, height = canvas.clientHeight;
+  if (!width || !height) return;
+  offsetX += (width - viewWidth) / 2;
+  offsetY += (height - viewHeight) / 2;
+  viewWidth = width;
+  viewHeight = height;
+  const dpr = devicePixelRatio || 1;
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (fitted) fit();
+  else draw();
+}).observe(canvas);
+
+function pointer(event) {
+  const bounds = canvas.getBoundingClientRect();
+  return [event.clientX - bounds.left, event.clientY - bounds.top];
+}
+
+canvas.addEventListener("wheel", event => {
+  if (!data) return;
+  event.preventDefault();
+  zoom(event.deltaY < 0 ? 1.18 : .85, ...pointer(event));
+}, {passive: false});
+canvas.onpointerdown = event => {
+  if (!data || event.button !== 0) return;
+  canvas.setPointerCapture(event.pointerId);
+  drag = {point: pointer(event), offsetX, offsetY, moved: false};
+};
+canvas.onpointermove = event => {
+  if (!data) return;
+  const [x, y] = pointer(event);
+  if (drag) {
+    const dx = x - drag.point[0], dy = y - drag.point[1];
+    if (drag.moved || Math.hypot(dx, dy) > 3) {
+      drag.moved = true;
+      fitted = false;
+      canvas.classList.add("dragging");
+      offsetX = drag.offsetX + dx;
+      offsetY = drag.offsetY + dy;
+      draw();
+    }
+  }
+  const [wx, wy] = toWorld((x - offsetX) / scale, (y - offsetY) / scale);
+  byId("cursor").textContent = `X ${wx.toFixed(2)} m · Y ${wy.toFixed(2)} m`;
+};
+canvas.onpointerup = event => {
+  if (!drag) return;
+  if (!drag.moved) {
+    const [x, y] = pointer(event);
+    const pin = markers.findLast(item => Math.hypot(item.x - x, item.y - y) <= 12);
+    if (pin) {
+      selectRobot(pin.robot.id);
+    } else if (spatialCommands.has(commandChoice.value) && canCommand(selectedRobot(), commandChoice.value)) {
+      const u = (x - offsetX) / scale, v = (y - offsetY) / scale;
+      if (onMap(u, v)) {
+        target = toWorld(u, v).map(value => Number(value.toFixed(2)));
+        byId("x").value = target[0].toFixed(2);
+        byId("y").value = target[1].toFixed(2);
+        draw();
       }
     }
   }
-  drag=null;
+  drag = null;
+  canvas.classList.remove("dragging");
 };
-c.onpointercancel=()=>{drag=null;};
+canvas.onpointercancel = () => {
+  drag = null;
+  canvas.classList.remove("dragging");
+};
+
 async function refresh() {
   try {
-    const response=await fetch("/api/state",{signal:AbortSignal.timeout(3000)});
-    if(!response.ok)throw Error("unavailable");
-    const next=await response.json(), fresh=next.map.map_id!==data?.map.map_id;
-    connected=true;data=next;
-    if(!selected&&data.robots.length)selected=data.robots[0].id;
-    if(fresh){img=new Image();img.onload=fit;img.src="/map.png";}
+    const response = await fetch("/api/state", {signal: AbortSignal.timeout(3000)});
+    if (!response.ok) throw Error("unavailable");
+    const next = await response.json();
+    const mapChanged = next.map.map_id !== data?.map.map_id;
+    connected = true;
+    data = next;
+    if (selected && (mapChanged || !selectedRobot())) selectRobot(null, false);
+    if (mapChanged) {
+      image = new Image();
+      image.onload = fit;
+      image.src = next.map.image;
+      fit();
+    }
     render();
-  } catch(e) {
-    connected=false;render();$("counts").textContent="控制台连接中断";
-  } finally {setTimeout(refresh,850);}
+  } catch {
+    connected = false;
+    render();
+  } finally {
+    setTimeout(refresh, 850);
+  }
 }
 refresh();

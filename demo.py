@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a local host and two clearly marked simulated robots."""
+"""Run a local host and eight simulated robots."""
 import argparse
 from contextlib import ExitStack
 from pathlib import Path
@@ -31,18 +31,19 @@ def main():
                         proc.wait()
             stack.callback(stop)
             return proc
-        generate(directory, ROOT/"maps/desk/map.json",
-                 [("a210-01", None, "一号车", [-.6, -.65, 54]),
-                  ("a210-02", None, "二号车", [1.3, .6, -35]),
-                  ("a210-03", None, "三号车", [0., 0., 0])],
+        positions = [(-.60, -.65, 54), (1.30, .60, -35), (.60, -2.0, 90), (3.10, -.90, 16),
+                     (2.70, 2.0, 135), (4.90, -1.90, -75), (5.80, 1.30, -160), (3.80, 3.40, 38)]
+        robots = [(f"a210-{i:02}", None, f"机器人 {i:02}", position)
+                  for i, position in enumerate(positions, start=1)]
+        generate(directory, ROOT/"maps/desk/map.json", robots,
                  bind="127.0.0.1", host_url=f"http://127.0.0.1:{a.robot_port}",
                  port=a.robot_port, ui=a.operator_port, demo=True)
         host = start("host.py", "host.json")
         time.sleep(.2)
         if host.poll() is not None:
             raise SystemExit(host.returncode)
-        start("agent.py", "a210-01.json")
-        start("agent.py", "a210-02.json")
+        for robot_id, *_ in robots:
+            start("agent.py", robot_id + ".json")
         try:
             host.wait()
         except KeyboardInterrupt:

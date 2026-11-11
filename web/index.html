@@ -1,35 +1,79 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>校园机器人控制台</title>
-<link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>校园机器人控制台</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
 </head>
 <body>
-<header><strong>校园机器人控制台</strong><span id="scope">正在连接</span><span id="counts" role="status"></span></header>
+<header>
+  <h1>校园机器人控制台</h1>
+  <span id="scope">正在连接</span>
+</header>
 <main>
-  <section class="mapPane" aria-label="机器人地图">
-    <div class="mapBar"><b id="mapName">地图</b><span id="mapInfo"></span>
-      <div class="zoom"><button id="zoomOut" title="缩小">−</button><button id="zoomIn" title="放大">＋</button><button id="fit">全图</button></div>
-    </div>
-    <canvas id="map" aria-label="地图，拖动平移、滚轮缩放；点击可选目标坐标"></canvas>
-    <div class="mapBar"><span id="cursor">拖动平移 · 滚轮缩放 · 点击取坐标</span><span>● 实时位置　○ 最后位置</span></div>
-  </section>
-  <aside>
-    <section><h2>机器人</h2><div id="robots">等待设备状态</div></section>
-    <section><h2>指令 <small id="selection">未选中</small></h2>
-      <dl id="detail"></dl>
-      <div class="buttonRow"><button data-cmd="ping" disabled>通信探测</button><button data-cmd="status" disabled>读取状态</button></div>
-      <div class="coordinate">
-        <label>X / m<input id="x" type="number" step=".01"></label>
-        <label>Y / m<input id="y" type="number" step=".01"></label>
-        <label>朝向 / °<input id="yaw" type="number" min="-180" max="180" value="0"></label>
-      </div>
-      <div class="buttonRow"><button data-cmd="seed_pose" disabled>设初始位姿</button><button data-cmd="preview_path" disabled>预览路线</button></div>
-      <p id="notice" role="status">点选机器人后可操作。路线预览不驱动底盘。</p>
+  <dl class="overview" aria-label="车队状态">
+    <div><dt>在线</dt><dd id="onlineCount">—</dd></div>
+    <div><dt>实时定位</dt><dd id="localizedCount">—</dd></div>
+    <div><dt>定位待确认</dt><dd id="waitingCount">—</dd></div>
+    <div><dt>离线</dt><dd id="offlineCount">—</dd></div>
+  </dl>
+
+  <div class="workspace">
+    <section class="fleet" aria-labelledby="fleetTitle">
+      <div class="paneHeader"><h2 id="fleetTitle">机器人</h2><span id="fleetCount"></span></div>
+      <div id="robots" class="robots"><p class="empty">等待设备状态</p></div>
     </section>
-    <section class="logPane"><h2>指令回执</h2><ol id="jobs"></ol></section>
-  </aside>
+
+    <section class="mapPane" aria-label="机器人地图">
+      <div class="paneHeader">
+        <div><h2 id="mapName">地图</h2><span id="mapInfo"></span></div>
+        <div class="zoom">
+          <button id="zoomOut" type="button" aria-label="缩小">−</button>
+          <button id="zoomIn" type="button" aria-label="放大">＋</button>
+          <button id="fit" type="button">全图</button>
+        </div>
+      </div>
+      <canvas id="map" aria-label="机器人位置地图。可以通过设备列表选择机器人。"></canvas>
+      <div class="mapBar">
+        <span id="cursor">拖动平移 · 滚轮缩放</span>
+        <span class="legend">● 实时位置 <span>○ 最后位置</span></span>
+      </div>
+    </section>
+
+    <section id="commandPane" class="commandPane" aria-labelledby="selection" hidden>
+      <div class="paneHeader">
+        <h2 id="selection"></h2>
+        <button id="closeSelection" type="button" aria-label="取消选择">×</button>
+      </div>
+      <div class="commandBody">
+        <p id="detail"></p>
+        <form id="commandForm">
+          <div class="commandControls">
+            <label>
+              <span class="sr-only">指令</span>
+              <select id="commandChoice">
+                <option value="">选择指令</option>
+                <option value="ping">通信探测</option>
+                <option value="status">读取状态</option>
+                <option value="seed_pose">设置初始位姿</option>
+                <option value="preview_path">预览路线</option>
+              </select>
+            </label>
+            <button id="sendCommand" type="submit" disabled>发送</button>
+          </div>
+          <div id="coordinates" class="coordinate" hidden>
+            <label>X / m<input id="x" type="number" step=".01"></label>
+            <label>Y / m<input id="y" type="number" step=".01"></label>
+            <label>朝向 / °<input id="yaw" type="number" min="-180" max="180" step="any" value="0"></label>
+          </div>
+        </form>
+        <p id="notice" role="status" hidden></p>
+        <ol id="jobs" aria-label="当前机器人指令回执" hidden></ol>
+      </div>
+    </section>
+  </div>
 </main>
 </body>
 </html>
