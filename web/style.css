@@ -1,0 +1,22 @@
+:root{color-scheme:light;--ink:#192525;--muted:#536564;--line:#c9d4d1;--paper:#f4f7f5;--card:#fff;--accent:#145b52}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px system-ui,sans-serif}
+header{height:57px;display:flex;align-items:center;gap:16px;border-bottom:1px solid var(--line);background:var(--card);padding:0 22px}
+header strong{font-size:18px;white-space:nowrap}#scope{color:var(--muted)}#scope.demo{color:#7c4900;background:#fff0d4;padding:3px 7px;border-radius:3px}#counts{margin-left:auto;font-variant-numeric:tabular-nums}
+main{display:grid;grid-template-columns:minmax(0,1fr) 345px;gap:14px;padding:14px;height:calc(100dvh - 57px);min-height:580px}
+section{background:var(--card);border:1px solid var(--line);border-radius:5px;min-width:0}aside{display:flex;flex-direction:column;gap:10px;min-height:0;overflow:auto}
+aside section{padding:12px}.mapPane{display:grid;grid-template-rows:auto minmax(0,1fr) auto;overflow:hidden}
+.mapBar{padding:8px 11px;display:flex;align-items:center;gap:10px;color:var(--muted);min-height:36px}
+.mapBar b{color:var(--ink)}.mapBar:last-child{justify-content:space-between;font-size:12px}.zoom{margin-left:auto;display:flex;gap:4px}
+canvas{width:100%;height:100%;display:block;background:#e8eeeb;cursor:crosshair;touch-action:none}
+h2{margin:0 0 9px;font-size:15px}small{color:var(--muted);font-weight:400}
+button,input{font:inherit;color:var(--ink);border:1px solid var(--line);border-radius:4px;background:#fff;padding:5px 9px;min-height:32px}
+button{cursor:pointer}button:hover:not(:disabled){border-color:var(--accent);background:#ecf4f0}button:disabled{opacity:.43;cursor:default}
+button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.robot{display:grid;width:100%;grid-template-columns:1fr auto;text-align:left;gap:3px 9px;margin:4px 0;background:#fff}
+.robot[aria-pressed=true]{background:#e7f2ed;border-color:#469383}.robot .addr,.robot .state{font-size:12px;color:var(--muted)}
+.robot .state[data-state=localized]{color:#126448}.robot .state[data-state=map_mismatch],.robot .state[data-state=stale]{color:#804400}
+.coordinate,.buttonRow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:8px 0}.buttonRow{grid-template-columns:1fr 1fr}.coordinate label{color:var(--muted);font-size:12px}.coordinate input{display:block;width:100%;margin-top:3px;padding:4px}
+#notice{font-size:12px;color:var(--muted);min-height:16px;margin:8px 0 0}#notice.error{color:#a13026}
+dl{margin:7px 0;color:var(--muted);font-size:12px;line-height:1.5}dt,dd{display:inline;margin:0}dd{margin-right:10px}
+#jobs{list-style:none;padding:0;margin:0;max-height:225px;overflow:auto}#jobs li{padding:6px 0;border-top:1px solid #e5ece9;font-size:12px}#jobs small{display:block;margin-top:3px}
+@media(max-width:730px){header{padding:0 10px;gap:8px;font-size:12px}header strong{font-size:15px}main{display:block;height:auto;padding:8px}.mapPane{height:56dvh;min-height:335px;margin-bottom:8px}aside{overflow:visible}}

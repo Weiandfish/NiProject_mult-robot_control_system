@@ -1,0 +1,15 @@
+[Unit]
+Description=Campus fleet control host
+
+[Service]
+Type=exec
+WorkingDirectory=%h/campus-fleet
+ExecStart=/usr/bin/python3 -B "%h/campus-fleet/host.py" "%h/.config/campus-fleet/host.json"
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+NoNewPrivileges=yes
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

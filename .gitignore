@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+/private/
+*.key
+.DS_Store
+/.env*
+/host.json
+/robot.json
+*.bundle

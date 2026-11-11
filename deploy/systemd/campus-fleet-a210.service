@@ -1,0 +1,17 @@
+[Unit]
+Description=Campus fleet agent for A210
+
+[Service]
+Type=exec
+WorkingDirectory=%h/campus-fleet
+EnvironmentFile=-%h/.config/campus-fleet/a210.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/bin/bash "%h/campus-fleet/run-a210.sh" "%h/.config/campus-fleet/robot.json"
+UMask=0077
+NoNewPrivileges=yes
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
